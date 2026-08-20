@@ -1,0 +1,643 @@
+--[[
+    Roblox Utility Hub - Otimizado para DELTA EXECUTOR (Mobile)
+    Features: ESP, Aimbot (Mobile), Fly, Speed, Item Grabber
+]]
+
+-- ==========================================
+-- SERVIÇOS
+-- ==========================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+-- ==========================================
+-- CONFIGURAÇÕES
+-- ==========================================
+local Config = {
+    Fly = { Enabled = false, Speed = 25 },
+    Speed = { Enabled = false, Value = 50 },
+    NoClip = false,
+    
+    ESP = {
+        Enabled = false,
+        Boxes = true,
+        Tracers = true,
+        Names = true,
+        TeamCheck = false,
+        MaxDistance = 500,
+        Color = Color3.fromRGB(0, 255, 255)
+    },
+    
+    Aimbot = {
+        Enabled = false,
+        TeamCheck = true,
+        Smoothness = 0.5,  -- Quanto menor, mais rápido (0.1 = instantâneo, 1 = lento)
+        FOV = 150,
+        ShowFOV = true,
+        TargetPart = "Head",
+        WallCheck = true
+    },
+    
+    Grabber = {
+        Enabled = true,
+        Range = 30,
+        AutoGrab = false
+    }
+}
+
+-- Variáveis internas
+local AimbotTarget = nil
+local ESPDrawings = {}
+local FlyConnection = nil
+local BodyGyro, BodyVelocity = nil, nil
+
+-- ==========================================
+-- FUNÇÕES UTILITÁRIAS
+-- ==========================================
+local function GetCharacter()
+    return LocalPlayer.Character or Workspace:FindFirstChild(LocalPlayer.Name)
+end
+
+local function GetRootPart()
+    local char = GetCharacter()
+    return char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+end
+
+local function GetHumanoid()
+    local char = GetCharacter()
+    return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function IsEnemy(player)
+    if player == LocalPlayer then return false end
+    if Config.Aimbot.TeamCheck and player.Team == LocalPlayer.Team then
+        return false
+    end
+    return true
+end
+
+local function GetDistance(pos1, pos2)
+    return (pos1 - pos2).Magnitude
+end
+
+-- ==========================================
+-- SISTEMA DE ESP
+-- ==========================================
+local ESP = {}
+
+function ESP:CreateDrawing(player)
+    if ESPDrawings[player] then return end
+    
+    ESPDrawings[player] = {
+        Box = Drawing.new("Square"),
+        Tracer = Drawing.new("Line"),
+        Name = Drawing.new("Text"),
+        Health = Drawing.new("Text")
+    }
+    
+    local d = ESPDrawings[player]
+    d.Box.Thickness = 1
+    d.Box.Filled = false
+    
+    d.Tracer.Thickness = 1
+    
+    for _, text in pairs({d.Name, d.Health}) do
+        text.Size = 13
+        text.Center = true
+        text.Outline = true
+    end
+end
+
+function ESP:Update()
+    if not Config.ESP.Enabled then
+        for _, drawings in pairs(ESPDrawings) do
+            for _, d in pairs(drawings) do d.Visible = false end
+        end
+        return
+    end
+    
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            self:CreateDrawing(player)
+            self:DrawPlayer(player)
+        end
+    end
+    
+    -- Cleanup jogadores que saíram
+    for player, _ in pairs(ESPDrawings) do
+        if not player.Parent then
+            for _, d in pairs(ESPDrawings[player]) do d:Remove() end
+            ESPDrawings[player] = nil
+        end
+    end
+end
+
+function ESP:DrawPlayer(player)
+    local d = ESPDrawings[player]
+    local char = player.Character
+    if not char then
+        for _, drawing in pairs(d) do drawing.Visible = false end
+        return
+    end
+    
+    local root = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso")
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    
+    if not root or not humanoid or humanoid.Health <= 0 then
+        for _, drawing in pairs(d) do drawing.Visible = false end
+        return
+    end
+    
+    if Config.ESP.TeamCheck and player.Team == LocalPlayer.Team then
+        for _, drawing in pairs(d) do drawing.Visible = false end
+        return
+    end
+    
+    local pos, onScreen = Camera:WorldToViewportPoint(root.Position)
+    if not onScreen then
+        for _, drawing in pairs(d) do drawing.Visible = false end
+        return
+    end
+    
+    local distance = GetDistance(Camera.CFrame.Position, root.Position)
+    if distance > Config.ESP.MaxDistance then
+        for _, drawing in pairs(d) do drawing.Visible = false end
+        return
+    end
+    
+    local scale = math.clamp(1000 / distance, 5, 50)
+    local size = Vector2.new(scale * 2, scale * 3.5)
+    
+    -- Box
+    if Config.ESP.Boxes then
+        d.Box.Size = size
+        d.Box.Position = Vector2.new(pos.X - size.X/2, pos.Y - size.Y/2)
+        d.Box.Color = Config.ESP.Color
+        d.Box.Visible = true
+    else
+        d.Box.Visible = false
+    end
+    
+    -- Tracer
+    if Config.ESP.Tracers then
+        d.Tracer.From = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y)
+        d.Tracer.To = Vector2.new(pos.X, pos.Y)
+        d.Tracer.Color = Config.ESP.Color
+        d.Tracer.Visible = true
+    else
+        d.Tracer.Visible = false
+    end
+    
+    -- Name
+    if Config.ESP.Names then
+        d.Name.Text = string.format("%s [%dm]", player.Name, math.floor(distance))
+        d.Name.Position = Vector2.new(pos.X, pos.Y - size.Y/2 - 15)
+        d.Name.Color = Config.ESP.Color
+        d.Name.Visible = true
+    else
+        d.Name.Visible = false
+    end
+    
+    -- Health
+    if humanoid then
+        local hp = humanoid.Health / humanoid.MaxHealth
+        d.Health.Text = string.format("%d/%d", math.floor(humanoid.Health), math.floor(humanoid.MaxHealth))
+        d.Health.Position = Vector2.new(pos.X, pos.Y + size.Y/2 + 5)
+        d.Health.Color = Color3.fromRGB(255 * (1-hp), 255 * hp, 0)
+        d.Health.Visible = true
+    end
+end
+
+-- ==========================================
+-- SISTEMA DE AIMBOT (FUNCIONA NO DELTA!)
+-- ==========================================
+local Aimbot = {
+    FOVDrawing = nil
+}
+
+function Aimbot:Init()
+    -- Círculo de FOV
+    self.FOVDrawing = Drawing.new("Circle")
+    self.FOVDrawing.Thickness = 1
+    self.FOVDrawing.NumSides = 64
+    self.FOVDrawing.Filled = false
+    self.FOVDrawing.Color = Color3.fromRGB(255, 255, 255)
+end
+
+function Aimbot:IsVisible(targetPart)
+    if not Config.Aimbot.WallCheck then return true end
+    
+    local origin = Camera.CFrame.Position
+    local direction = (targetPart.Position - origin).Unit * 1000
+    
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = {LocalPlayer.Character}
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+    
+    local result = Workspace:Raycast(origin, direction, rayParams)
+    if result then
+        local model = result.Instance:FindFirstAncestorOfClass("Model")
+        if model and model:FindFirstChild(targetPart.Name) then
+            return true
+        end
+    end
+    return false
+end
+
+function Aimbot:GetTarget()
+    local closest = nil
+    local closestDist = Config.Aimbot.FOV
+    local mousePos = UserInputService:GetMouseLocation()
+    
+    for _, player in ipairs(Players:GetPlayers()) do
+        if not IsEnemy(player) then continue end
+        
+        local char = player.Character
+        if not char then continue end
+        
+        local targetPart = char:FindFirstChild(Config.Aimbot.TargetPart)
+        if not targetPart then continue end
+        
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        if not humanoid or humanoid.Health <= 0 then continue end
+        
+        if not self:IsVisible(targetPart) then continue end
+        
+        local pos = Camera:WorldToViewportPoint(targetPart.Position)
+        local dist = math.sqrt((pos.X - mousePos.X)^2 + (pos.Y - mousePos.Y)^2)
+        
+        if dist < closestDist and pos.Z > 0 then
+            closestDist = dist
+            closest = player
+        end
+    end
+    
+    return closest
+end
+
+-- AIMBOT PRINCIPAL (FUNCIONA EM MOBILE!)
+function Aimbot:Update()
+    -- Atualizar círculo de FOV
+    if self.FOVDrawing then
+        self.FOVDrawing.Visible = Config.Aimbot.Enabled and Config.Aimbot.ShowFOV
+        self.FOVDrawing.Radius = Config.Aimbot.FOV
+        self.FOVDrawing.Position = UserInputService:GetMouseLocation()
+    end
+    
+    if not Config.Aimbot.Enabled then
+        AimbotTarget = nil
+        return
+    end
+    
+    -- Pegar alvo
+    AimbotTarget = self:GetTarget()
+    
+    if AimbotTarget then
+        local char = AimbotTarget.Character
+        local targetPart = char and char:FindFirstChild(Config.Aimbot.TargetPart)
+        
+        if targetPart then
+            -- MÉTODO QUE FUNCIONA NO DELTA/MOBILE!
+            -- Suaviza a rotação da câmera em direção ao alvo
+            local targetCFrame = CFrame.new(Camera.CFrame.Position, targetPart.Position)
+            Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, Config.Aimbot.Smoothness)
+        end
+    end
+end
+
+-- ==========================================
+-- SISTEMA DE MOVIMENTO (FLY)
+-- ==========================================
+local Movement = {}
+
+function Movement:EnableFly()
+    local char = GetCharacter()
+    local root = GetRootPart()
+    if not char or not root then return end
+    
+    BodyGyro = Instance.new("BodyGyro")
+    BodyGyro.P = 9e4
+    BodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+    BodyGyro.CFrame = root.CFrame
+    BodyGyro.Parent = root
+    
+    BodyVelocity = Instance.new("BodyVelocity")
+    BodyVelocity.Velocity = Vector3.zero
+    BodyVelocity.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+    BodyVelocity.Parent = root
+    
+    FlyConnection = RunService.RenderStepped:Connect(function()
+        if not Config.Fly.Enabled then
+            self:DisableFly()
+            return
+        end
+        
+        local camCF = Camera.CFrame
+        local move = Vector3.zero
+        
+        -- Mobile: usar direção da câmera
+        move = camCF.LookVector * Config.Fly.Speed
+        
+        if BodyVelocity then BodyVelocity.Velocity = move end
+        if BodyGyro then BodyGyro.CFrame = camCF end
+    end)
+end
+
+function Movement:DisableFly()
+    if FlyConnection then FlyConnection:Disconnect() FlyConnection = nil end
+    if BodyGyro then BodyGyro:Destroy() BodyGyro = nil end
+    if BodyVelocity then BodyVelocity:Destroy() BodyVelocity = nil end
+end
+
+function Movement:UpdateSpeed()
+    local humanoid = GetHumanoid()
+    if humanoid then
+        humanoid.WalkSpeed = Config.Speed.Enabled and Config.Speed.Value or 16
+    end
+end
+
+-- ==========================================
+-- SISTEMA DE ITEM GRABBER
+-- ==========================================
+local Grabber = {}
+
+function Grabber:IsValidItem(obj)
+    if not obj then return false end
+    if obj:IsA("Tool") then return true end
+    if obj:IsA("Model") and (obj:FindFirstChild("Handle") or obj:FindFirstChildWhichIsA("Tool")) then
+        return true
+    end
+    if obj:IsA("BasePart") then
+        local name = obj.Name:lower()
+        if name:find("gun") or name:find("weapon") or name:find("item") or 
+           name:find("loot") or name:find("coin") or name:find("key") or name:find("ammo") then
+            return true
+        end
+    end
+    return false
+end
+
+function Grabber:GetItems()
+    local items = {}
+    local root = GetRootPart()
+    if not root then return items end
+    
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if self:IsValidItem(obj) then
+            local pos = obj:IsA("Model") and obj:GetPivot().Position or obj.Position
+            if GetDistance(pos, root.Position) <= Config.Grabber.Range then
+                table.insert(items, obj)
+            end
+        end
+    end
+    
+    return items
+end
+
+function Grabber:Grab(item)
+    local root = GetRootPart()
+    if not root then return end
+    
+    local targetPos = root.Position + root.CFrame.LookVector * 3
+    
+    if item:IsA("Tool") and item:FindFirstChild("Handle") then
+        TweenService:Create(item.Handle, TweenInfo.new(0.3), {Position = targetPos}):Play()
+    elseif item:IsA("BasePart") then
+        TweenService:Create(item, TweenInfo.new(0.3), {Position = targetPos}):Play()
+    elseif item:IsA("Model") and item.PrimaryPart then
+        TweenService:Create(item.PrimaryPart, TweenInfo.new(0.3), {Position = targetPos}):Play()
+    end
+    
+    -- Tentar equipar
+    task.delay(0.35, function()
+        if firetouchinterest then
+            local handle = item:FindFirstChild("Handle")
+            if handle then
+                firetouchinterest(handle, root, 0)
+                task.wait()
+                firetouchinterest(handle, root, 1)
+            end
+        end
+    end)
+end
+
+function Grabber:GrabNearest()
+    local items = self:GetItems()
+    if #items == 0 then return end
+    
+    local root = GetRootPart()
+    local nearest = items[1]
+    local nearestDist = GetDistance(
+        nearest:IsA("Model") and nearest:GetPivot().Position or nearest.Position,
+        root.Position
+    )
+    
+    for i = 2, #items do
+        local pos = items[i]:IsA("Model") and items[i]:GetPivot().Position or items[i].Position
+        local dist = GetDistance(pos, root.Position)
+        if dist < nearestDist then
+            nearest = items[i]
+            nearestDist = dist
+        end
+    end
+    
+    self:Grab(nearest)
+end
+
+function Grabber:GrabAll()
+    local items = self:GetItems()
+    for i, item in ipairs(items) do
+        task.delay(i * 0.1, function() self:Grab(item) end)
+    end
+end
+
+-- ==========================================
+-- INTERFACE MOBILE (BOTÕES)
+-- ==========================================
+local MobileUI = {}
+
+function MobileUI:Create()
+    local screen = Instance.new("ScreenGui")
+    screen.Name = "DeltaHub"
+    screen.ResetOnSpawn = false
+    
+    pcall(function()
+        screen.Parent = gethui and gethui() or CoreGui
+    end)
+    
+    -- Frame principal
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0, 220, 0, 350)
+    frame.Position = UDim2.new(1, -230, 1, -370)
+    frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    frame.BackgroundTransparency = 0.2
+    frame.BorderSizePixel = 0
+    frame.Parent = screen
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 12)
+    corner.Parent = frame
+    
+    -- Título
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 35)
+    title.BackgroundColor3 = Color3.fromRGB(0, 120, 255)
+    title.Text = "🔥 DELTA HUB"
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.TextSize = 18
+    title.Font = Enum.Font.GothamBold
+    title.Parent = frame
+    
+    Instance.new("UICorner").Parent = title
+    
+    -- Função criar botão
+    local function CreateBtn(name, text, yPos, color, callback)
+        local btn = Instance.new("TextButton")
+        btn.Name = name
+        btn.Size = UDim2.new(0.9, 0, 0, 40)
+        btn.Position = UDim2.new(0.05, 0, 0, yPos)
+        btn.BackgroundColor3 = color
+        btn.Text = text
+        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        btn.TextSize = 14
+        btn.Font = Enum.Font.GothamSemibold
+        btn.Parent = frame
+        
+        Instance.new("UICorner").Parent = btn
+        
+        local active = false
+        btn.MouseButton1Click:Connect(function()
+            active = not active
+            if active then
+                btn.BackgroundColor3 = Color3.fromRGB(0, 255, 100)
+                btn.TextColor3 = Color3.fromRGB(0, 0, 0)
+            else
+                btn.BackgroundColor3 = color
+                btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            end
+            callback(active)
+        end)
+        
+        return btn
+    end
+    
+    -- Botões
+    CreateBtn("FlyBtn", "🪽 Fly", 45, Color3.fromRGB(60, 60, 60), function(a)
+        Config.Fly.Enabled = a
+        if a then Movement:EnableFly() else Movement:DisableFly() end
+    end)
+    
+    CreateBtn("SpeedBtn", "⚡ Speed", 90, Color3.fromRGB(60, 60, 60), function(a)
+        Config.Speed.Enabled = a
+        Movement:UpdateSpeed()
+    end)
+    
+    CreateBtn("ESPBth", "👁️ ESP", 135, Color3.fromRGB(60, 60, 60), function(a)
+        Config.ESP.Enabled = a
+    end)
+    
+    -- AIMBOT BOTÃO (NOVO!)
+    CreateBtn("AimbotBtn", "🎯 AIMBOT", 180, Color3.fromRGB(255, 50, 50), function(a)
+        Config.Aimbot.Enabled = a
+    end)
+    
+    CreateBtn("NoClipBtn", "👻 NoClip", 225, Color3.fromRGB(60, 60, 60), function(a)
+        Config.NoClip = a
+    end)
+    
+    -- Slider de Smoothness para Aimbot
+    local smoothLabel = Instance.new("TextLabel")
+    smoothLabel.Size = UDim2.new(0.9, 0, 0, 20)
+    smoothLabel.Position = UDim2.new(0.05, 0, 0, 270)
+    smoothLabel.BackgroundTransparency = 1
+    smoothLabel.Text = "Aimbot Smooth: 0.5"
+    smoothLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    smoothLabel.TextSize = 12
+    smoothLabel.Parent = frame
+    
+    local smoothSlider = Instance.new("TextButton")
+    smoothSlider.Size = UDim2.new(0.9, 0, 0, 25)
+    smoothSlider.Position = UDim2.new(0.05, 0, 0, 290)
+    smoothSlider.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+    smoothSlider.Text = "Click to Adjust"
+    smoothSlider.TextColor3 = Color3.fromRGB(255, 255, 255)
+    smoothSlider.Parent = frame
+    
+    Instance.new("UICorner").Parent = smoothSlider
+    
+    local smoothLevels = {0.1, 0.3, 0.5, 0.7, 1.0}
+    local currentSmooth = 3
+    
+    smoothSlider.MouseButton1Click:Connect(function()
+        currentSmooth = currentSmooth % #smoothLevels + 1
+        Config.Aimbot.Smoothness = smoothLevels[currentSmooth]
+        smoothLabel.Text = "Aimbot Smooth: " .. tostring(smoothLevels[currentSmooth])
+    end)
+    
+    -- Botões de Grab (separados)
+    local grabFrame = Instance.new("Frame")
+    grabFrame.Size = UDim2.new(0, 200, 0, 100)
+    grabFrame.Position = UDim2.new(1, -210, 0, 10)
+    grabFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    grabFrame.BackgroundTransparency = 0.2
+    grabFrame.Parent = screen
+    
+    Instance.new("UICorner").Parent = grabFrame
+    
+    local grabTitle = Instance.new("TextLabel")
+    grabTitle.Size = UDim2.new(1, 0, 0, 25)
+    grabTitle.BackgroundColor3 = Color3.fromRGB(255, 150, 0)
+    grabTitle.Text = "🎁 ITEM GRABBER"
+    grabTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    grabTitle.Font = Enum.Font.GothamBold
+    grabTitle.Parent = grabFrame
+    
+    Instance.new("UICorner").Parent = grabTitle
+    
+    local grabBtn = Instance.new("TextButton")
+    grabBtn.Size = UDim2.new(0.9, 0, 0, 30)
+    grabBtn.Position = UDim2.new(0.05, 0, 0, 30)
+    grabBtn.BackgroundColor3 = Color3.fromRGB(255, 150, 0)
+    grabBtn.Text = "🎯 Grab Nearest"
+    grabBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    grabBtn.Parent = grabFrame
+    
+    Instance.new("UICorner").Parent = grabBtn
+    
+    grabBtn.MouseButton1Click:Connect(function()
+        Grabber:GrabNearest()
+    end)
+    
+    local grabAllBtn = Instance.new("TextButton")
+    grabAllBtn.Size = UDim2.new(0.9, 0, 0, 30)
+    grabAllBtn.Position = UDim2.new(0.05, 0, 0, 65)
+    grabAllBtn.BackgroundColor3 = Color3.fromRGB(255, 100, 100)
+    grabAllBtn.Text = "💎 Grab All"
+    grabAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    grabAllBtn.Parent = grabFrame
+    
+    Instance.new("UICorner").Parent = grabAllBtn
+    
+    grabAllBtn.MouseButton1Click:Connect(function()
+        Grabber:GrabAll()
+    end)
+    
+    -- Botão flutuante para esconder/mostrar
+    local toggle = Instance.new("TextButton")
+    toggle.Size = UDim2.new(0, 50, 0, 50)
+    toggle.Position = UDim2.new(1, -60, 1, -60)
+    toggle.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+    toggle.Text = "⚡"
+    toggle.TextSize = 30
+    toggle.Parent = screen
+    
+    Instance.new("UICorner").Parent = toggle
+    
+    local visible = true
+    toggle.MouseButton1Click:Conne
